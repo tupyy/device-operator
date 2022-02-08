@@ -1,0 +1,24 @@
+# permissions for end users to edit devicedeployments.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devicedeployment-editor-role
+rules:
+- apiGroups:
+  - app.device-operator.io
+  resources:
+  - devicedeployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - app.device-operator.io
+  resources:
+  - devicedeployments/status
+  verbs:
+  - get

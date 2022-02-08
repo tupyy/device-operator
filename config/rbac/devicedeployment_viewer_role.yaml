@@ -1,0 +1,20 @@
+# permissions for end users to view devicedeployments.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: devicedeployment-viewer-role
+rules:
+- apiGroups:
+  - app.device-operator.io
+  resources:
+  - devicedeployments
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - app.device-operator.io
+  resources:
+  - devicedeployments/status
+  verbs:
+  - get

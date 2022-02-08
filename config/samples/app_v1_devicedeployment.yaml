@@ -1,0 +1,6 @@
+apiVersion: app.device-operator.io/v1
+kind: DeviceDeployment
+metadata:
+  name: devicedeployment-sample
+spec:
+  # TODO(user): Add fields here

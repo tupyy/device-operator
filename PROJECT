@@ -1,0 +1,16 @@
+domain: device-operator.io
+layout:
+- go.kubebuilder.io/v3
+projectName: device-operator
+repo: github.com/tupyy/device-operator
+resources:
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: device-operator.io
+  group: app
+  kind: DeviceDeployment
+  path: github.com/tupyy/device-operator/api/v1
+  version: v1
+version: "3"
