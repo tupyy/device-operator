@@ -1,6 +1,19 @@
 apiVersion: app.device-operator.io/v1
 kind: DeviceDeployment
 metadata:
-  name: devicedeployment-sample
+  name: device-simu-vtr
 spec:
-  # TODO(user): Add fields here
+  startDeviceID: 1
+  endDeviceID: 3
+  deviceCount: 1
+  messagesFrequency: 1
+  deploymentTemplate:
+    selector:
+      matchLabels:
+        device: device-simu-vtr
+    template:
+      spec:
+        containers:
+        - name: device-job
+          image: docker.io/library/device-job:626daf4
+        restartPolicy: Always

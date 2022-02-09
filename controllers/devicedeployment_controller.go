@@ -18,7 +18,11 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 
+	kapps "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,16 +51,180 @@ type DeviceDeploymentReconciler struct {
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.11.0/pkg/reconcile
 func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var deviceDeployment appv1.DeviceDeployment
+	if err := r.Get(ctx, req.NamespacedName, &deviceDeployment); err != nil {
+		logger.Error(err, "failed to fetch device deployment")
+
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	// list active jobs
+	var deploymentList kapps.DeploymentList
+	if err := r.List(ctx, &deploymentList, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
+		logger.Error(err, "failed to list child jobs")
+
+		return ctrl.Result{}, err
+	}
+
+	logger.V(1).Info("deployment count", "count", len(deploymentList.Items))
+
+	for _, deployment := range deploymentList.Items {
+		logger.V(0).Info("deployment", "deployment", deployment.Name)
+	}
+
+	var deploymentsToCreate int32
+
+	// we suppose that device ids are in asc order.
+	if deviceDeployment.Spec.EndDeviceID != nil {
+		if *deviceDeployment.Spec.EndDeviceID < deviceDeployment.Spec.StartDeviceID {
+			return ctrl.Result{}, fmt.Errorf("EndDeviceID '%d' must be superior to StartDeviceID '%d'", *deviceDeployment.Spec.EndDeviceID, deviceDeployment.Spec.StartDeviceID)
+		}
+
+	} else if deviceDeployment.Spec.Count != nil {
+		deploymentsToCreate = *deviceDeployment.Spec.Count
+	}
+
+	logger.V(0).Info("deployment to create", "count", deploymentsToCreate)
+
+	if deploymentsToCreate == 0 {
+		return ctrl.Result{}, nil
+	}
+
+	startDeviceID := deviceDeployment.Spec.StartDeviceID
+	for deploymentsToCreate > 0 {
+		deployment, err := constructDeployment(&deviceDeployment, startDeviceID, startDeviceID+int64(deviceDeployment.Spec.DeviceCount))
+		if err != nil {
+			logger.Error(err, "failed to create deployment")
+
+			continue
+		}
+
+		if err := ctrl.SetControllerReference(&deviceDeployment, deployment, r.Scheme); err != nil {
+			return ctrl.Result{}, err
+		}
+
+		if err := r.Create(ctx, deployment); err != nil {
+			logger.Error(err, "unable to create deployment for CronJob", "deployment", deployment)
+			return ctrl.Result{}, err
+		}
+
+		logger.V(1).Info("created device deployment", "deployment", deployment)
+
+		deploymentsToCreate--
+		startDeviceID += int64(deviceDeployment.Spec.DeviceCount)
+	}
 
 	return ctrl.Result{}, nil
 }
 
+// contruct a deployment which will simulate devices from startDeviceID to endDeviceID one by one.
+func constructDeployment(deviceDeployment *appv1.DeviceDeployment, startDeviceID, endDeviceID int64) (*kapps.Deployment, error) {
+	// We want deployment names for a given nominal start time to have a deterministic name to avoid the same deployment being created twice
+	name := fmt.Sprintf("%s-%d-%d", deviceDeployment.Name, startDeviceID, endDeviceID)
+
+	deployment := &kapps.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels:      make(map[string]string),
+			Annotations: make(map[string]string),
+			Name:        name,
+			Namespace:   deviceDeployment.Namespace,
+		},
+		Spec: *deviceDeployment.Spec.DeploymentTemplate.DeepCopy(),
+	}
+
+	// set env variable the startDeviceID and endDeviceID
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "START_DEVICE_ID",
+			Value: fmt.Sprintf("%d", startDeviceID),
+		},
+		{
+			Name:  "END_DEVICE_ID",
+			Value: fmt.Sprintf("%d", endDeviceID),
+		},
+		{
+			Name:  "MESSAGE_FREQUENCY",
+			Value: fmt.Sprintf("%d", deviceDeployment.Spec.MessagesFrequency),
+		},
+	}
+
+	deployment.Spec.Template.ObjectMeta.Labels = map[string]string{"device": name}
+	deployment.Spec.Template.Spec.Containers[0].Env = envVars
+	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"device": name}}
+
+	return deployment, nil
+}
+
+var (
+	jobOwnerKey = ".metadata.controller"
+	apiGVStr    = appv1.GroupVersion.String()
+)
+
+type deploymentData struct {
+	StartDeviceID     int32
+	EndDeviceID       int32
+	MessagesFrequency int32
+}
+
+// computeDeploymentData returns a list with all deployments which are supposed to be running in the cluster.
+func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDeployment int32, totalDevices *int32, messageFrequency int32) []deploymentData {
+	data := make([]deploymentData, 0)
+
+	var _endDeviceID int32
+
+	if endDeviceID == nil && totalDevices == nil {
+		return data
+	}
+
+	if totalDevices != nil {
+		_endDeviceID = startDeviceID + *totalDevices - 1
+	} else if endDeviceID != nil {
+		_endDeviceID = *endDeviceID
+	}
+
+	for {
+		d := deploymentData{
+			StartDeviceID:     startDeviceID,
+			EndDeviceID:       startDeviceID + devicesPerDeployment - 1,
+			MessagesFrequency: messageFrequency,
+		}
+
+		data = append(data, d)
+
+		startDeviceID += devicesPerDeployment
+
+		if startDeviceID > _endDeviceID {
+			break
+		}
+	}
+
+	return data
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *DeviceDeploymentReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &kapps.Deployment{}, jobOwnerKey, func(rawObj client.Object) []string {
+		// grab the deployment object, extract the owner...
+		deployment := rawObj.(*kapps.Deployment)
+		owner := metav1.GetControllerOf(deployment)
+		if owner == nil {
+			return nil
+		}
+
+		if owner.APIVersion != apiGVStr || owner.Kind != "DeviceDeployment" {
+			return nil
+		}
+
+		// ...and if so, return it
+		return []string{owner.Name}
+	}); err != nil {
+		return err
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&appv1.DeviceDeployment{}).
+		Owns(&kapps.Deployment{}).
 		Complete(r)
 }

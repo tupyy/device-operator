@@ -17,25 +17,34 @@ limitations under the License.
 package v1
 
 import (
+	appv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // DeviceDeploymentSpec defines the desired state of DeviceDeployment
 type DeviceDeploymentSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// id of the first device
+	StartDeviceID int64 `json:"startDeviceID"`
 
-	// Foo is an example field of DeviceDeployment. Edit devicedeployment_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// id of the last device
+	// +optional
+	EndDeviceID *int64 `json:"endDeviceID"`
+
+	// +optional
+	Count *int32 `json:"count"`
+
+	// devices per deployment
+	//+kubebuilder:validation:Minimum=1
+	DeviceCount int32 `json:"deviceCount"`
+
+	//+kubebuilder:validation:Minimum=1
+	MessagesFrequency int32 `json:"messagesFrequency"`
+
+	DeploymentTemplate appv1.DeploymentSpec `json:"deploymentTemplate"`
 }
 
 // DeviceDeploymentStatus defines the observed state of DeviceDeployment
 type DeviceDeploymentStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
 }
 
 //+kubebuilder:object:root=true
