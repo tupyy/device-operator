@@ -24,11 +24,11 @@ import (
 // DeviceDeploymentSpec defines the desired state of DeviceDeployment
 type DeviceDeploymentSpec struct {
 	// id of the first device
-	StartDeviceID int64 `json:"startDeviceID"`
+	StartDeviceID int32 `json:"startDeviceID"`
 
 	// id of the last device
 	// +optional
-	EndDeviceID *int64 `json:"endDeviceID"`
+	EndDeviceID *int32 `json:"endDeviceID"`
 
 	// +optional
 	Count *int32 `json:"count"`

@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	kapps "k8s.io/api/apps/v1"
@@ -60,6 +61,18 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	// we suppose that device ids are in asc order.
+	if deviceDeployment.Spec.EndDeviceID != nil {
+		if *deviceDeployment.Spec.EndDeviceID < deviceDeployment.Spec.StartDeviceID {
+			return ctrl.Result{}, fmt.Errorf("EndDeviceID '%d' must be superior to StartDeviceID '%d'", *deviceDeployment.Spec.EndDeviceID, deviceDeployment.Spec.StartDeviceID)
+		}
+	} else if deviceDeployment.Spec.Count == nil {
+		return ctrl.Result{}, errors.New("either EndDeviceID or Count must be specified")
+	}
+
+	// compute deployments data
+	deploymentsData := computeDeploymentData(deviceDeployment.Spec.StartDeviceID, deviceDeployment.Spec.EndDeviceID, deviceDeployment.Spec.DeviceCount, deviceDeployment.Spec.Count, deviceDeployment.Spec.MessagesFrequency)
+
 	// list active jobs
 	var deploymentList kapps.DeploymentList
 	if err := r.List(ctx, &deploymentList, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
@@ -70,31 +83,41 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	logger.V(1).Info("deployment count", "count", len(deploymentList.Items))
 
-	for _, deployment := range deploymentList.Items {
-		logger.V(0).Info("deployment", "deployment", deployment.Name)
+	obsoleteDeployments := []*kapps.Deployment{}
+
+	// deploymentsData describe the deployments to be created.
+	// if an existing deployment is not found in deploymentsData than it is deleted.
+	for _, d := range deploymentList.Items {
+		if d.DeletionTimestamp == nil {
+			found := false
+			for idx, data := range deploymentsData {
+				if isValid(d, data) {
+					found = true
+					deploymentsData = append(deploymentsData[0:idx], deploymentsData[idx+1:]...)
+
+					break
+				}
+			}
+
+			if !found {
+				obsoleteDeployments = append(obsoleteDeployments, &d)
+			}
+		}
 	}
 
-	var deploymentsToCreate int32
-
-	// we suppose that device ids are in asc order.
-	if deviceDeployment.Spec.EndDeviceID != nil {
-		if *deviceDeployment.Spec.EndDeviceID < deviceDeployment.Spec.StartDeviceID {
-			return ctrl.Result{}, fmt.Errorf("EndDeviceID '%d' must be superior to StartDeviceID '%d'", *deviceDeployment.Spec.EndDeviceID, deviceDeployment.Spec.StartDeviceID)
+	// delete all the obsoleteDeployments
+	for _, d := range obsoleteDeployments {
+		if err := r.Delete(ctx, d, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+			logger.Error(err, "failed to delete old deployment")
+		} else {
+			logger.V(1).Info("deleted deployment", "deployment", d)
 		}
 
-	} else if deviceDeployment.Spec.Count != nil {
-		deploymentsToCreate = *deviceDeployment.Spec.Count
 	}
 
-	logger.V(0).Info("deployment to create", "count", deploymentsToCreate)
-
-	if deploymentsToCreate == 0 {
-		return ctrl.Result{}, nil
-	}
-
-	startDeviceID := deviceDeployment.Spec.StartDeviceID
-	for deploymentsToCreate > 0 {
-		deployment, err := constructDeployment(&deviceDeployment, startDeviceID, startDeviceID+int64(deviceDeployment.Spec.DeviceCount))
+	// create deployments
+	for _, data := range deploymentsData {
+		deployment, err := constructDeployment(&deviceDeployment, data.StartDeviceID, data.EndDeviceID, data.MessagesFrequency)
 		if err != nil {
 			logger.Error(err, "failed to create deployment")
 
@@ -106,21 +129,18 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 
 		if err := r.Create(ctx, deployment); err != nil {
-			logger.Error(err, "unable to create deployment for CronJob", "deployment", deployment)
+			logger.Error(err, "unable to create deployment", "deployment", deployment)
 			return ctrl.Result{}, err
 		}
 
 		logger.V(1).Info("created device deployment", "deployment", deployment)
-
-		deploymentsToCreate--
-		startDeviceID += int64(deviceDeployment.Spec.DeviceCount)
 	}
 
 	return ctrl.Result{}, nil
 }
 
 // contruct a deployment which will simulate devices from startDeviceID to endDeviceID one by one.
-func constructDeployment(deviceDeployment *appv1.DeviceDeployment, startDeviceID, endDeviceID int64) (*kapps.Deployment, error) {
+func constructDeployment(deviceDeployment *appv1.DeviceDeployment, startDeviceID, endDeviceID, messageFrequency int32) (*kapps.Deployment, error) {
 	// We want deployment names for a given nominal start time to have a deterministic name to avoid the same deployment being created twice
 	name := fmt.Sprintf("%s-%d-%d", deviceDeployment.Name, startDeviceID, endDeviceID)
 
@@ -150,6 +170,7 @@ func constructDeployment(deviceDeployment *appv1.DeviceDeployment, startDeviceID
 		},
 	}
 
+	deployment.Labels["marker"] = fmt.Sprintf("%d-%d-%d", startDeviceID, endDeviceID, messageFrequency)
 	deployment.Spec.Template.ObjectMeta.Labels = map[string]string{"device": name}
 	deployment.Spec.Template.Spec.Containers[0].Env = envVars
 	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"device": name}}
@@ -187,8 +208,13 @@ func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDe
 	for {
 		d := deploymentData{
 			StartDeviceID:     startDeviceID,
-			EndDeviceID:       startDeviceID + devicesPerDeployment - 1,
 			MessagesFrequency: messageFrequency,
+		}
+
+		if startDeviceID+devicesPerDeployment-1 < _endDeviceID {
+			d.EndDeviceID = startDeviceID + devicesPerDeployment - 1
+		} else {
+			d.EndDeviceID = _endDeviceID
 		}
 
 		data = append(data, d)
@@ -201,6 +227,15 @@ func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDe
 	}
 
 	return data
+}
+
+func isValid(deployment kapps.Deployment, data deploymentData) bool {
+	marker := fmt.Sprintf("%d-%d-%d", data.StartDeviceID, data.EndDeviceID, data.MessagesFrequency)
+	if val, found := deployment.Labels["marker"]; found {
+		return marker == val
+	}
+
+	return false
 }
 
 // SetupWithManager sets up the controller with the Manager.

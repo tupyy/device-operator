@@ -89,7 +89,7 @@ func (in *DeviceDeploymentSpec) DeepCopyInto(out *DeviceDeploymentSpec) {
 	*out = *in
 	if in.EndDeviceID != nil {
 		in, out := &in.EndDeviceID, &out.EndDeviceID
-		*out = new(int64)
+		*out = new(int32)
 		**out = **in
 	}
 	if in.Count != nil {

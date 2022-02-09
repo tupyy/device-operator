@@ -28,8 +28,8 @@ func TestComputeDeloymentData(t *testing.T) {
 		},
 		{
 			StartDeviceID:       1,
-			EndDeviceID:         int32P(9),
-			DevicePerDeployment: 2,
+			EndDeviceID:         int32P(5),
+			DevicePerDeployment: 3,
 			MessageFrequency:    1,
 		},
 	}
@@ -41,7 +41,7 @@ func TestComputeDeloymentData(t *testing.T) {
 	assert.Len(t, d, 4)
 
 	d = computeDeploymentData(data[2].StartDeviceID, data[2].EndDeviceID, data[2].DevicePerDeployment, data[2].TotalDevices, data[2].MessageFrequency)
-	assert.Len(t, d, 5)
+	assert.Len(t, d, 2)
 }
 
 func int32P(v int32) *int32 {

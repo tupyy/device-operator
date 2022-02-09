@@ -7571,7 +7571,7 @@ spec:
                 type: integer
               endDeviceID:
                 description: id of the last device
-                format: int64
+                format: int32
                 type: integer
               messagesFrequency:
                 format: int32
@@ -7579,7 +7579,7 @@ spec:
                 type: integer
               startDeviceID:
                 description: id of the first device
-                format: int64
+                format: int32
                 type: integer
             required:
             - deploymentTemplate
