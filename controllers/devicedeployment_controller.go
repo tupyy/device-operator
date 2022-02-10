@@ -38,7 +38,8 @@ type DeviceDeploymentReconciler struct {
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=app.device-operator.io,resources=devicedeployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=app.device-operator.io,resources=devicedeployments;deployments,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch
 //+kubebuilder:rbac:groups=app.device-operator.io,resources=devicedeployments/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=app.device-operator.io,resources=devicedeployments/finalizers,verbs=update
 

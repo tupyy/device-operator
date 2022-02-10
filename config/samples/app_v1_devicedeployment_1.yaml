@@ -1,16 +1,16 @@
 apiVersion: app.device-operator.io/v1
 kind: DeviceDeployment
 metadata:
-  name: device-simu-vtr
+  name: device-vtr
 spec:
   startDeviceID: 1
-  endDeviceID: 5
-  deviceCount: 2
+  endDeviceID: 30
+  deviceCount: 5
   messagesFrequency: 1
   deploymentTemplate:
     selector:
       matchLabels:
-        device: device-simu-vtr
+        device: device-vtr
     template:
       spec:
         containers:
