@@ -79,46 +79,37 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	if err := r.List(ctx, &deploymentList, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
 		logger.Error(err, "failed to list child jobs")
 
-		return ctrl.Result{}, err
+		return ctrl.Result{Requeue: true}, err
 	}
 
 	logger.V(1).Info("deployment count", "count", len(deploymentList.Items))
 
-	obsoleteDeployments := []*kapps.Deployment{}
-
 	// deploymentsData describe the deployments to be created.
-	// if an existing deployment is not found in deploymentsData than it is deleted.
+	// keep only the new data
 	for _, d := range deploymentList.Items {
-		if d.DeletionTimestamp == nil {
-			found := false
-			for idx, data := range deploymentsData {
-				if isValid(d, data) {
-					found = true
-					deploymentsData = append(deploymentsData[0:idx], deploymentsData[idx+1:]...)
-
-					break
-				}
-			}
-
-			if !found {
-				obsoleteDeployments = append(obsoleteDeployments, &d)
-			}
+		if d.DeletionTimestamp != nil {
+			continue
 		}
-	}
 
-	// delete all the obsoleteDeployments
-	for _, d := range obsoleteDeployments {
-		if err := r.Delete(ctx, d, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
+		dataID := d.Labels["dataID"]
+		if _, exists := deploymentsData[dataID]; exists {
+			delete(deploymentsData, dataID)
+
+			continue
+		}
+
+		if err := r.Delete(ctx, &d, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
 			logger.Error(err, "failed to delete old deployment")
 		} else {
-			logger.V(1).Info("deleted deployment", "deployment", d)
+			logger.V(1).Info("deleted deployment", "deployment", d.Name)
 		}
-
 	}
+
+	logger.V(1).Info("deployments to create", "deployments", deploymentsData)
 
 	// create deployments
 	for _, data := range deploymentsData {
-		deployment, err := constructDeployment(&deviceDeployment, data.StartDeviceID, data.EndDeviceID, data.MessagesFrequency)
+		deployment, err := constructDeployment(&deviceDeployment, data)
 		if err != nil {
 			logger.Error(err, "failed to create deployment")
 
@@ -126,12 +117,15 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 
 		if err := ctrl.SetControllerReference(&deviceDeployment, deployment, r.Scheme); err != nil {
-			return ctrl.Result{}, err
+			logger.Error(err, "unable to set reference controller")
+
+			continue
 		}
 
 		if err := r.Create(ctx, deployment); err != nil {
 			logger.Error(err, "unable to create deployment", "deployment", deployment)
-			return ctrl.Result{}, err
+
+			continue
 		}
 
 		logger.V(1).Info("created device deployment", "deployment", deployment)
@@ -141,9 +135,9 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 }
 
 // contruct a deployment which will simulate devices from startDeviceID to endDeviceID one by one.
-func constructDeployment(deviceDeployment *appv1.DeviceDeployment, startDeviceID, endDeviceID, messageFrequency int32) (*kapps.Deployment, error) {
+func constructDeployment(deviceDeployment *appv1.DeviceDeployment, d deploymentData) (*kapps.Deployment, error) {
 	// We want deployment names for a given nominal start time to have a deterministic name to avoid the same deployment being created twice
-	name := fmt.Sprintf("%s-%d-%d", deviceDeployment.Name, startDeviceID, endDeviceID)
+	name := fmt.Sprintf("%s-%d-%d", deviceDeployment.Name, d.StartDeviceID, d.EndDeviceID)
 
 	deployment := &kapps.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -159,19 +153,19 @@ func constructDeployment(deviceDeployment *appv1.DeviceDeployment, startDeviceID
 	envVars := []corev1.EnvVar{
 		{
 			Name:  "START_DEVICE_ID",
-			Value: fmt.Sprintf("%d", startDeviceID),
+			Value: fmt.Sprintf("%d", d.StartDeviceID),
 		},
 		{
 			Name:  "END_DEVICE_ID",
-			Value: fmt.Sprintf("%d", endDeviceID),
+			Value: fmt.Sprintf("%d", d.EndDeviceID),
 		},
 		{
 			Name:  "MESSAGE_FREQUENCY",
-			Value: fmt.Sprintf("%d", deviceDeployment.Spec.MessagesFrequency),
+			Value: fmt.Sprintf("%d", d.MessagesFrequency),
 		},
 	}
 
-	deployment.Labels["marker"] = fmt.Sprintf("%d-%d-%d", startDeviceID, endDeviceID, messageFrequency)
+	deployment.Labels["dataID"] = d.Id()
 	deployment.Spec.Template.ObjectMeta.Labels = map[string]string{"device": name}
 	deployment.Spec.Template.Spec.Containers[0].Env = envVars
 	deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: map[string]string{"device": name}}
@@ -190,9 +184,13 @@ type deploymentData struct {
 	MessagesFrequency int32
 }
 
+func (d deploymentData) Id() string {
+	return fmt.Sprintf("%d-%d-%d", d.StartDeviceID, d.EndDeviceID, d.MessagesFrequency)
+}
+
 // computeDeploymentData returns a list with all deployments which are supposed to be running in the cluster.
-func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDeployment int32, totalDevices *int32, messageFrequency int32) []deploymentData {
-	data := make([]deploymentData, 0)
+func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDeployment int32, totalDevices *int32, messageFrequency int32) map[string]deploymentData {
+	data := make(map[string]deploymentData)
 
 	var _endDeviceID int32
 
@@ -218,7 +216,7 @@ func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDe
 			d.EndDeviceID = _endDeviceID
 		}
 
-		data = append(data, d)
+		data[d.Id()] = d
 
 		startDeviceID += devicesPerDeployment
 
@@ -230,10 +228,9 @@ func computeDeploymentData(startDeviceID int32, endDeviceID *int32, devicesPerDe
 	return data
 }
 
-func isValid(deployment kapps.Deployment, data deploymentData) bool {
-	marker := fmt.Sprintf("%d-%d-%d", data.StartDeviceID, data.EndDeviceID, data.MessagesFrequency)
-	if val, found := deployment.Labels["marker"]; found {
-		return marker == val
+func exists(deployment kapps.Deployment, data deploymentData) bool {
+	if val, found := deployment.Labels["dataID"]; found {
+		return data.Id() == val
 	}
 
 	return false
