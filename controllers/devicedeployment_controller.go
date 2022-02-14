@@ -20,7 +20,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/jpillora/backoff"
 	kapps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,6 +38,18 @@ import (
 type DeviceDeploymentReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+}
+
+var b *backoff.Backoff
+
+func init() {
+	b = &backoff.Backoff{
+		//These are the defaults
+		Min:    100 * time.Millisecond,
+		Max:    60 * time.Second,
+		Factor: 2,
+		Jitter: false,
+	}
 }
 
 //+kubebuilder:rbac:groups=app.device-operator.io,resources=devicedeployments;deployments,verbs=get;list;watch;create;update;patch;delete
@@ -74,12 +88,17 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	// compute deployments data
 	deploymentsData := computeDeploymentData(deviceDeployment.Spec.StartDeviceID, deviceDeployment.Spec.EndDeviceID, deviceDeployment.Spec.DeviceCount, deviceDeployment.Spec.Count, deviceDeployment.Spec.MessagesFrequency)
 
+	// set duration for scheduled result
+	scheduledResult := ctrl.Result{RequeueAfter: b.Duration()}
+	// reschedule set to true if we need to retry later on
+	reschedule := false
+
 	// list active jobs
 	var deploymentList kapps.DeploymentList
 	if err := r.List(ctx, &deploymentList, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
 		logger.Error(err, "failed to list child jobs")
 
-		return ctrl.Result{Requeue: true}, err
+		return scheduledResult, err
 	}
 
 	logger.V(1).Info("deployment count", "count", len(deploymentList.Items))
@@ -100,6 +119,7 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 		if err := r.Delete(ctx, &d, client.PropagationPolicy(metav1.DeletePropagationBackground)); client.IgnoreNotFound(err) != nil {
 			logger.Error(err, "failed to delete old deployment")
+			reschedule = true
 		} else {
 			logger.V(1).Info("deleted deployment", "deployment", d.Name)
 		}
@@ -112,23 +132,30 @@ func (r *DeviceDeploymentReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		deployment, err := constructDeployment(&deviceDeployment, data)
 		if err != nil {
 			logger.Error(err, "failed to create deployment")
+			reschedule = true
 
 			continue
 		}
 
 		if err := ctrl.SetControllerReference(&deviceDeployment, deployment, r.Scheme); err != nil {
 			logger.Error(err, "unable to set reference controller")
+			reschedule = true
 
 			continue
 		}
 
 		if err := r.Create(ctx, deployment); err != nil {
 			logger.Error(err, "unable to create deployment", "deployment", deployment)
+			reschedule = true
 
 			continue
 		}
 
 		logger.V(1).Info("created device deployment", "deployment", deployment)
+	}
+
+	if reschedule {
+		return scheduledResult, nil
 	}
 
 	return ctrl.Result{}, nil
